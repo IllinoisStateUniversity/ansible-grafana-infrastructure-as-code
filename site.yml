@@ -1,0 +1,216 @@
+- name: Grafana - Infrastructure as Code
+  hosts: localhost
+  connection: localhost
+  gather_facts: false
+  vars_files: "vars/{{ grafana_environment }}.yml"
+
+  tasks:
+    - name: Get Openshift Local Admin Account from Keeper
+      keepersecurity.keeper_secrets_manager.keeper_get_record:
+        title: "openshift-{{ grafana_environment }}-svc-ansible"
+      register: keeper_openshift_admin
+      no_log: true
+
+    - name: Get Grafana Local Admin Account from Keeper
+      keepersecurity.keeper_secrets_manager.keeper_get_record:
+        title: "grafana-{{ grafana_environment }}-admin"
+      register: keeper_grafana_admin
+      no_log: true
+
+    - name: Get Grafana OIDC Account from Keeper
+      keepersecurity.keeper_secrets_manager.keeper_get_record:
+        title: "grafana-{{ grafana_environment }}-oidc"
+      register: keeper_grafana_oidc
+      no_log: true
+
+    - name: Attempt to Renew the Grafana SSL Cert 
+      ansible.builtin.include_role:
+        name: illinoisstate.acme.renew_certificate # Custom Private ISU Ansible Collection that does ACME Certificate Management
+      vars:
+        renew_certificate_keeper_acme_secret_title: acme-login
+        renew_certificate_keeper_acme_secret_privatekey_field: keyPair
+        renew_certificate_common_name: "{{ (grafana_environment == 'prod') | ternary('grafana.example.com', 'grafana-test.example.com') }}"
+
+    - name: Get Grafana Certificate Record from Keeper
+      keepersecurity.keeper_secrets_manager.keeper_get_record:
+        title: "{{ (grafana_environment == 'prod') | ternary('ssl-certificate-grafana-example-com', 'ssl-certificate-grafana-test-example-com') }}"
+      register: keeper_grafana_cert
+      no_log: true
+
+    - name: Decrypt SSL Private Key from Keeper and Create a File on the EE
+      community.crypto.openssl_privatekey_convert:
+        src_content: "{{ keeper_grafana_cert.record.Private_Key | join('') }}"
+        src_passphrase: "{{ keeper_grafana_cert.record.Private_Key_Passpharse | join('') }}"
+        dest_path: /tmp/grafana.key
+        format: pkcs1
+      changed_when: false
+
+    - name: Login to OpenShift as svc_account_user to Get Token for ClusterAdmin
+      ansible.builtin.shell: oc login "{{ openshift_api_url }}" --username={{ keeper_openshift_admin.record.login | join('') }} --password={{ keeper_openshift_admin.record.password | join('') }}
+      no_log: true
+      changed_when: false
+
+    - name: Get API token for svc_account_user for ClusterAdmin
+      ansible.builtin.shell: oc whoami -t
+      register: api_token
+      no_log: true
+      changed_when: false
+
+    - name: Read decrypted private key into variable
+      ansible.builtin.slurp:
+        src: /tmp/grafana.key
+      register: slurped_grafana_key
+      no_log: true
+      changed_when: false
+
+    - name: Deploy the Grafana Operator - OperatorGroup
+      redhat.openshift.k8s:
+        definition:
+          apiVersion: operators.coreos.com/v1
+          kind: OperatorGroup
+          metadata:
+            name: grafana-operator
+            namespace: "{{ openshift_namespace }}"
+          spec:
+            targetNamespaces:
+              - "{{ openshift_namespace }}"
+      environment:
+        K8S_AUTH_API_KEY: "{{ api_token.stdout }}" # Use environment variable to use ClusterAdmin account and override the namespace service account api token cred from AAP
+
+    - name: Deploy the Grafana Operator - Subscription
+      redhat.openshift.k8s:
+        definition:
+          apiVersion: operators.coreos.com/v1alpha1
+          kind: Subscription
+          metadata:
+            name: grafana-operator
+            namespace: "{{ openshift_namespace }}"
+          spec:
+            channel: v5
+            name: grafana-operator
+            source: community-operators
+            sourceNamespace: openshift-marketplace
+
+    - name: Deploy Grafana Instance
+      redhat.openshift.k8s:
+        namespace: "{{ openshift_namespace }}"
+        definition:
+          apiVersion: grafana.integreatly.org/v1beta1
+          kind: Grafana
+          metadata:
+            name: grafana
+            labels:
+              dashboards: grafana
+              folders: grafana
+          spec:
+            persistentVolumeClaim:
+              spec:
+                accessModes:
+                  - ReadWriteOnce
+                resources:
+                  requests:
+                    storage: 2Gi
+                storageClassName: ocs-storagecluster-ceph-rbd
+            deployment:
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: grafana
+                        image: grafana/grafana:10.4.2
+                    volumes:
+                      - name: grafana-data
+                        persistentVolumeClaim:
+                          claimName: grafana-pvc
+            config:
+              log:
+                mode: console
+              auth:
+                disable_login_form: 'false'
+              security:
+                admin_user: "{{ keeper_grafana_admin.record.login | join('') }}"
+                admin_password: "{{ keeper_grafana_admin.record.password | join('') }}"
+              server:
+                root_url: "{{ root_url }}"
+              auth.generic_oauth:
+                enabled: 'true'
+                client_id: "{{ keeper_grafana_oidc.record.login | join('') }}"
+                client_secret: "{{ keeper_grafana_oidc.record.password | join('') }}"
+                token_url: '{{ grafana_oidc_token_url }}'
+                auth_url: '{{ grafana_oidc_auth_url }}'
+                api_url: '{{ grafana_oidc_api_url }}'
+                role_attribute_path: contains(groups, 'app_grafana_roles_fulladmin') && 'GrafanaAdmin' || contains(groups, 'app_grafana_roles_viewer') && 'Viewer'
+                allow_assign_grafana_admin: 'true'
+                role_attribute_strict: 'true'
+                scopes: 'openid,profile,email,groups'
+      no_log: true
+      environment:
+        K8S_AUTH_API_KEY: "{{ api_token.stdout }}"
+
+    - name: Deploy Grafana Data Source - Mimir
+      redhat.openshift.k8s:
+        definition:
+          apiVersion: grafana.integreatly.org/v1beta1
+          kind: GrafanaDatasource
+          metadata:
+            name: grafanadatasource-mimir
+            namespace: "{{ openshift_namespace }}"
+          spec:
+            datasource:
+              jsonData:
+                httpHeaderName1: X-Scope-OrgID
+                httpMethod: POST
+                manageAlerts: true
+                prometheusType: Mimir
+                prometheusVersion: 2.9.1
+              access: proxy
+              editable: true
+              isDefault: true
+              name: Mimir
+              type: prometheus
+              url: "http://mimir-service.{{ openshift_namespace }}.svc.cluster.local:9009/prometheus"
+              secureJsonData:
+                httpHeaderValue1: mimir-tenant-name
+            instanceSelector:
+              matchLabels:
+                dashboards: grafana
+
+    - name: Find dashboard files
+      ansible.builtin.find:
+        paths: "{{ playbook_dir }}/dashboards"
+        patterns: "*.json"
+      register: dashboard_files
+
+    - name: Deploy Grafana Dashboards
+      redhat.openshift.k8s:
+        definition: "{{ lookup('template', 'templates/grafana-dashboards.yml.j2') }}"
+      loop: "{{ dashboard_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Deploy a Route for Grafana
+      redhat.openshift.k8s:
+        definition:
+          kind: Route
+          apiVersion: route.openshift.io/v1
+          metadata:
+            name: grafana-route
+            namespace: "{{ openshift_namespace }}"
+            labels: {}
+          spec:
+            to:
+              kind: Service
+              name: grafana-service
+            tls:
+              termination: edge
+              insecureEdgeTerminationPolicy: Redirect
+              certificate: |-
+                {{ keeper_grafana_cert.record.Certificate | join('') }}
+              key: |-
+                {{ slurped_grafana_key.content | b64decode }}
+              caCertificate: |-
+                {{ keeper_grafana_cert.record.Intermediate_Certificate | join('') }}
+            host: "{{ openshift_route_url }}"
+            port:
+              targetPort: grafana
+      no_log: true

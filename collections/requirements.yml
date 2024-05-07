@@ -1,0 +1,6 @@
+---
+collections:
+  - name: redhat.openshift
+  - name: community.crypto
+  - name: keepersecurity.keeper_secrets_manager
+  - name: illinoisstate.acme  # Custom Private ISU Ansible Collection that does ACME Certificate Management

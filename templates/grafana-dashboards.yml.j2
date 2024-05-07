@@ -1,0 +1,13 @@
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: "grafanadashboard-{{ item.path | basename | regex_replace('.json$', '') }}"
+  namespace: "{{ openshift_namespace }}"
+spec:
+  folder: General
+  resyncPeriod: 30s
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  json: >-
+    {{ lookup('file', item.path) }}

@@ -1,0 +1,9 @@
+---
+openshift_api_url: https://api.example.com:6443
+openshift_namespace: your-metrics
+openshift_route_url: grafana.example.com
+root_url: https://grafana.example.com
+
+grafana_oidc_token_url: https://sso.example.com/idp/profile/oidc/token
+grafana_oidc_auth_url: https://sso.example.com/idp/profile/oidc/authorize
+grafana_oidc_api_url: https://sso.example.com/idp/profile/oidc/userinfo
