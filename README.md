@@ -1,2 +1,2 @@
 # ansible-grafana-infrastructure-as-code
-An Ansible playbook deploys and configures Grafana in OpenShift.
+An Ansible playbook that deploys and configures Grafana in OpenShift.
