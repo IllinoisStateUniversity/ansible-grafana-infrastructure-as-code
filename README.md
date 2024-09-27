@@ -9,19 +9,6 @@ This Ansible playbook automates the deployment and configuration of Grafana on O
 - Deployment of Grafana datasources and dashboards
 - Creation of OpenShift routes for Grafana with SSL termination
 
-## Table of Contents
-
-- [Prerequisites](#prerequisites)
-- [Folder Structure](#folder-structure)
-- [Variables](#variables)
-- [Secrets Management](#secrets-management)
-- [SSL Certificate Management](#ssl-certificate-management)
-- [Usage Instructions](#usage-instructions)
-- [Playbook Breakdown](#playbook-breakdown)
-  - [Tasks Overview](#tasks-overview)
-- [Custom Ansible Collection](#custom-ansible-collection)
-- [License](#license)
-
 ## Prerequisites
 
 - **Ansible Automation Platform (AAP)/AWX**: The playbook is designed to run in AAP/AWX.
